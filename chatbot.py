@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Validate required environment variables on startup
-REQUIRED_ENV_VARS = ["API_KEY", "MODEL_NAME", "POSTGRES_URL", "AWS_REGION", "AWS_S3_BUCKET_NAME"]
+REQUIRED_ENV_VARS = ["API_KEY", "MODEL_NAME", "REDIS_URL", "AWS_REGION", "AWS_S3_BUCKET_NAME"]
 missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
 if missing_vars:
     raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
@@ -720,10 +720,8 @@ async def health_check():
     """Health check endpoint with database connectivity check"""
     try:
         # Check database connectivity
-        pool = await db.get_pool()
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT 1")
+        client = await db.get_pool()
+        await client.ping()
         
         return {
             "status": "healthy",

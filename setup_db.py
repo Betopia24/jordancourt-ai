@@ -1,18 +1,23 @@
 import os
+import asyncio
 from dotenv import load_dotenv
-from langgraph.checkpoint.postgres import PostgresSaver
+import redis.asyncio as redis
 
 load_dotenv()
 
-def setup_database():
-    connection_string = os.getenv("POSTGRES_URL")
+async def setup_database():
+    connection_string = os.getenv("REDIS_URL")
     if not connection_string:
-        raise ValueError("POSTGRES_URL not found in .env")
+        raise ValueError("REDIS_URL not found in .env")
     
-    # Initialize the checkpointer to create tables
-    checkpointer = PostgresSaver.from_conn_string(connection_string)
-    checkpointer.setup()  # This creates the necessary tables
-    print("Database setup complete.")
+    client = redis.from_url(connection_string, decode_responses=True)
+    try:
+        pong = await client.ping()
+        if not pong:
+            raise RuntimeError("Redis ping failed")
+        print("Redis setup complete.")
+    finally:
+        await client.aclose()
 
 if __name__ == "__main__":
-    setup_database()
+    asyncio.run(setup_database())

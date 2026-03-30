@@ -4,14 +4,6 @@ FROM python:3.11-slim as builder
 # Set working directory
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy requirements file
 COPY requirements.txt .
 
@@ -30,10 +22,9 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Set working directory
 WORKDIR /app
 
-# Install runtime dependencies only
+# Install runtime dependency for health checks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -45,8 +36,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=appuser:appuser chatbot.py .
 COPY --chown=appuser:appuser database.py .
 COPY --chown=appuser:appuser s3_utils.py .
-COPY --chown=appuser:appuser setup_db.py .
-COPY --chown=appuser:appuser .env .
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
