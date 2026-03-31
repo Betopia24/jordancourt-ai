@@ -17,6 +17,7 @@ class S3Manager:
         self.access_key = os.getenv("AWS_ACCESS_KEY_ID")
         self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.bucket_name = os.getenv("AWS_S3_BUCKET_NAME")
+        self.public_read = os.getenv("AWS_S3_PUBLIC_READ", "true").strip().lower() == "true"
         
         # Validate required environment variables
         if not all([self.region, self.access_key, self.secret_key, self.bucket_name]):
@@ -140,25 +141,46 @@ class S3Manager:
             
             # Generate S3 key with correct extension
             s3_key = f"ai_image/{safe_user_id}_{safe_chat_id}_{image_count}.{extension}"
-            
-            # Upload to S3
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=image_data,
-                ContentType=content_type,
-                ServerSideEncryption='AES256',  # Enable encryption at rest
-                Metadata={
+
+            # Upload to S3 and set object-level public access by default.
+            put_kwargs = {
+                'Bucket': self.bucket_name,
+                'Key': s3_key,
+                'Body': image_data,
+                'ContentType': content_type,
+                'ServerSideEncryption': 'AES256',  # Enable encryption at rest
+                'Metadata': {
                     'user_id': safe_user_id,
                     'chat_id': safe_chat_id,
                     'image_count': str(image_count)
                 }
-            )
+            }
+            if self.public_read:
+                put_kwargs['ACL'] = 'public-read'
+
+            try:
+                self.s3_client.put_object(**put_kwargs)
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+                if self.public_read and error_code in ('AccessControlListNotSupported', 'InvalidRequest'):
+                    # Buckets with Object Ownership "Bucket owner enforced" reject ACLs.
+                    # Retry without ACL so upload succeeds; bucket policy must allow public reads.
+                    logger.warning(
+                        "Bucket does not allow ACLs (%s). Retrying upload without ACL. "
+                        "Configure bucket policy for public read if public URLs are required.",
+                        error_code
+                    )
+                    put_kwargs.pop('ACL', None)
+                    self.s3_client.put_object(**put_kwargs)
+                else:
+                    raise
             
             # Generate public URL
             image_url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{s3_key}"
             
-            logger.info(f"Image uploaded to S3: {s3_key} (format: {extension}, size: {len(image_data)} bytes)")
+            logger.info(
+                f"Image uploaded to S3: {s3_key} (format: {extension}, size: {len(image_data)} bytes, public_read={self.public_read})"
+            )
             return image_url
             
         except ClientError as e:
