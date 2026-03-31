@@ -686,6 +686,7 @@ async def get_chat_history(user_id: str, chat_id: str):
         return {
             "user_id": user_id,
             "chat_id": chat_id,
+            "chat_name": chat_data.get("chat_name") or "New Chat",
             "messages": chat_data.get("messages", []),
             "summary_context": chat_data.get("summary_context"),
             "created_at": str(chat_data.get("created_at")),

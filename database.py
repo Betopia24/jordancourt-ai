@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timezone
 import time
@@ -87,6 +88,7 @@ class Database:
         return {
             "user_id": raw.get("user_id"),
             "chat_id": raw.get("chat_id"),
+            "chat_name": raw.get("chat_name") or None,
             "messages": messages,
             "summary_context": raw.get("summary_context") or None,
             "image_count": int(raw.get("image_count", "0") or 0),
@@ -94,6 +96,20 @@ class Database:
             "updated_at": updated_at,
             "updated_at_ts": self._as_float(raw.get("updated_at_ts"), default=time.time()),
         }
+
+    @staticmethod
+    def _derive_chat_name_from_prompt(prompt: str, max_words: int = 4) -> str:
+        """Create a short chat name from the first user prompt."""
+        if not prompt:
+            return "New Chat"
+
+        cleaned_prompt = re.sub(r"\s+", " ", prompt.strip())
+        cleaned_prompt = re.sub(r"[^\w\s'-]", "", cleaned_prompt)
+        words = [w for w in cleaned_prompt.split() if w]
+        if not words:
+            return "New Chat"
+
+        return " ".join(words[:max_words])[:120]
 
     async def _get_chat_hash(self, user_id: str, chat_id: str) -> Dict[str, str]:
         client = await self.get_pool()
@@ -106,6 +122,7 @@ class Database:
         mapping = {
             "user_id": user_id,
             "chat_id": chat_id,
+            "chat_name": chat_data.get("chat_name") or "",
             "messages": json.dumps(chat_data.get("messages", [])),
             "summary_context": chat_data.get("summary_context") or "",
             "image_count": str(chat_data.get("image_count", 0)),
@@ -183,7 +200,28 @@ class Database:
         
         try:
             raw = await self._get_chat_hash(user_id, chat_id)
-            return self._parse_chat_hash(raw)
+            chat_data = self._parse_chat_hash(raw)
+            if not chat_data:
+                return None
+
+            # Backfill chat_name for older chats that were saved before this field existed.
+            if not chat_data.get("chat_name"):
+                first_user_message = next(
+                    (m.get("content", "") for m in chat_data.get("messages", []) if m.get("role") == "user"),
+                    ""
+                )
+                derived_name = self._derive_chat_name_from_prompt(first_user_message)
+                now_iso = self._utc_now_iso()
+                now_ts = time.time()
+                client = await self.get_pool()
+                await client.hset(self._chat_key(user_id, chat_id), mapping={
+                    "chat_name": derived_name,
+                    "updated_at": now_iso,
+                    "updated_at_ts": str(now_ts),
+                })
+                chat_data["chat_name"] = derived_name
+
+            return chat_data
         except Exception as e:
             logger.error(f"Error fetching chat: {e}", exc_info=True)
             raise
@@ -245,7 +283,13 @@ class Database:
                         messages = existing.get("messages", []) if existing else []
                         messages.append(message)
 
+                        existing_chat_name = (existing or {}).get("chat_name")
+                        chat_name = existing_chat_name
+                        if not chat_name and role == "user":
+                            chat_name = self._derive_chat_name_from_prompt(content)
+
                         updated_chat = {
+                            "chat_name": chat_name or "",
                             "messages": messages,
                             "summary_context": (existing or {}).get("summary_context") or "",
                             "image_count": (existing or {}).get("image_count", 0),
@@ -258,6 +302,7 @@ class Database:
                         await pipe.hset(chat_key, mapping={
                             "user_id": user_id,
                             "chat_id": chat_id,
+                            "chat_name": updated_chat["chat_name"],
                             "messages": json.dumps(updated_chat["messages"]),
                             "summary_context": updated_chat["summary_context"],
                             "image_count": str(updated_chat["image_count"]),
@@ -322,6 +367,7 @@ class Database:
                     continue
                 chats.append({
                     "chat_id": chat_id,
+                    "chat_name": chat_data.get("chat_name") or "New Chat",
                     "created_at": chat_data.get("created_at"),
                     "updated_at": chat_data.get("updated_at"),
                     "message_count": len(chat_data.get("messages", [])),
