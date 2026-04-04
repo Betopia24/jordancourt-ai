@@ -18,6 +18,7 @@ class S3Manager:
         self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.bucket_name = os.getenv("AWS_S3_BUCKET_NAME")
         self.public_read = os.getenv("AWS_S3_PUBLIC_READ", "true").strip().lower() == "true"
+        self.object_prefix = self._normalize_prefix(os.getenv("AWS_S3_OBJECT_PREFIX", "chat_uploads"))
         
         # Validate required environment variables
         if not all([self.region, self.access_key, self.secret_key, self.bucket_name]):
@@ -43,9 +44,22 @@ class S3Manager:
             )
             # Verify bucket access on initialization
             self._verify_bucket_access()
+            self._ensure_storage_folder()
         except Exception as e:
             logger.error(f"Failed to initialize S3 client: {e}")
             raise
+
+    def _normalize_prefix(self, prefix: str) -> str:
+        """Normalize and sanitize the S3 key prefix used as a logical folder."""
+        cleaned = (prefix or "").strip().strip('/')
+        cleaned = ''.join(c for c in cleaned if c.isalnum() or c in '-_/')
+        while '//' in cleaned:
+            cleaned = cleaned.replace('//', '/')
+
+        if not cleaned:
+            cleaned = "chat_uploads"
+
+        return f"{cleaned}/"
     
     def _verify_bucket_access(self):
         """Verify that the bucket exists and is accessible"""
@@ -60,6 +74,15 @@ class S3Manager:
                 raise ValueError(f"Access denied to S3 bucket: {self.bucket_name}")
             else:
                 raise ValueError(f"Cannot access S3 bucket: {error_code}")
+
+    def _ensure_storage_folder(self):
+        """Create a folder marker object so the S3 prefix is visible as a folder."""
+        try:
+            self.s3_client.put_object(Bucket=self.bucket_name, Key=self.object_prefix, Body=b"")
+            logger.info(f"S3 storage folder ready: {self.object_prefix}")
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            raise ValueError(f"Unable to create S3 storage folder '{self.object_prefix}': {error_code}")
     
     def _detect_image_format(self, image_data: bytes, filename: str = None) -> Tuple[str, str]:
         """
@@ -140,7 +163,7 @@ class S3Manager:
             safe_chat_id = ''.join(c for c in chat_id if c.isalnum() or c in '-_')[:50]
             
             # Generate S3 key with correct extension
-            s3_key = f"ai_image/{safe_user_id}_{safe_chat_id}_{image_count}.{extension}"
+            s3_key = f"{self.object_prefix}{safe_user_id}_{safe_chat_id}_{image_count}.{extension}"
 
             # Upload to S3 and set object-level public access by default.
             put_kwargs = {
@@ -212,7 +235,7 @@ class S3Manager:
             safe_chat_id = ''.join(c for c in chat_id if c.isalnum() or c in '-_')[:50]
             safe_extension = ''.join(c for c in extension if c.isalnum())[:10]
             
-            s3_key = f"ai_image/{safe_user_id}_{safe_chat_id}_{image_count}.{safe_extension}"
+            s3_key = f"{self.object_prefix}{safe_user_id}_{safe_chat_id}_{image_count}.{safe_extension}"
             
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
             logger.info(f"Image deleted from S3: {s3_key}")
